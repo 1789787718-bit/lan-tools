@@ -5,6 +5,7 @@
 """
 
 import http.server
+from http.server import ThreadingHTTPServer
 import os
 import sys
 import json
@@ -52,12 +53,25 @@ VK_F1     = 0x70
 VK_SHIFT  = 0x10
 VK_LWIN   = 0x5B
 VK_MENU   = 0x12  # Alt
+# 媒体键
+VK_MEDIA_PLAY_PAUSE  = 0xB3
+VK_MEDIA_NEXT_TRACK  = 0xB0
+VK_MEDIA_PREV_TRACK  = 0xB1
+VK_VOLUME_UP         = 0xAF
+VK_VOLUME_DOWN       = 0xAE
+VK_VOLUME_MUTE       = 0xAD
 
 KEY_MAP = {
     'Enter': VK_RETURN, 'Backspace': VK_BACK, 'Tab': VK_TAB, 'Escape': VK_ESCAPE,
     'Space': VK_SPACE, ' ': VK_SPACE,
     'ArrowLeft': VK_LEFT, 'ArrowUp': VK_UP, 'ArrowRight': VK_RIGHT, 'ArrowDown': VK_DOWN,
     'Delete': VK_DELETE, 'Home': VK_HOME, 'End': VK_END,
+    'MediaPlayPause': VK_MEDIA_PLAY_PAUSE,
+    'MediaNextTrack': VK_MEDIA_NEXT_TRACK,
+    'MediaPrevTrack': VK_MEDIA_PREV_TRACK,
+    'VolumeUp': VK_VOLUME_UP,
+    'VolumeDown': VK_VOLUME_DOWN,
+    'VolumeMute': VK_VOLUME_MUTE,
 }
 
 for i in range(1, 13):
@@ -149,11 +163,12 @@ INDEX_HTML = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
-<title>工具箱</title>
+<title>工具箱 v2.1</title>
 <style>
 :root{--bg:#0f0f0f;--card:#1a1a1a;--accent:#4dabf7;--text:#e0e0e0;--sub:#888;--danger:#ff6b6b;--border:#2a2a2a;--green:#51cf66;}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:16px;padding-bottom:100px;}
+html,body{width:100%;height:100%;overflow:hidden;position:fixed;touch-action:none;}
+body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:16px;padding-bottom:100px;overflow-y:auto;}
 h1{text-align:center;font-size:1.3rem;margin:16px 0 4px;}
 .subtitle{text-align:center;color:var(--sub);font-size:0.8rem;margin-bottom:20px;}
 
@@ -167,7 +182,7 @@ h1{text-align:center;font-size:1.3rem;margin:16px 0 4px;}
 .dropzone p{color:var(--sub);font-size:0.9rem;}
 .dropzone .btn{display:inline-block;margin-top:12px;padding:10px 24px;background:var(--accent);color:#fff;border-radius:8px;font-size:0.9rem;cursor:pointer;border:none;}
 
-.file-list{display:flex;flex-direction:column;gap:8px;}
+.file-list{display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:calc(100vh - 200px);}
 .file-item{display:flex;align-items:center;justify-content:space-between;background:var(--card);border-radius:10px;padding:12px 16px;border:1px solid var(--border);}
 .file-info{flex:1;min-width:0;}
 .file-name{font-size:0.95rem;word-break:break-all;}
@@ -185,13 +200,16 @@ input[type=file]{display:none;}
 
 /* ====== 遥控器 ====== */
 .remote-container{display:none;}
-.pad{background:var(--card);border:2px solid var(--border);border-radius:16px;height:250px;touch-action:none;margin-bottom:16px;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:0.9rem;user-select:none;-webkit-user-select:none;}
+.mouse-layout{display:flex;gap:10px;height:260px;}
+.pad{background:var(--card);border:2px solid var(--border);border-radius:16px;touch-action:none;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:0.9rem;user-select:none;-webkit-user-select:none;flex:1;height:100%;}
 .pad.active{border-color:var(--accent);}
-
+.mouse-buttons{width:90px;display:flex;flex-direction:column;gap:8px;}
+.mouse-btn{flex:1;border:none;border-radius:12px;background:var(--card);color:var(--text);font-size:0.95rem;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;transition:background .1s;border:1px solid var(--border);}
+.mouse-btn:active,.mouse-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.mouse-btn.drag-btn:active,.mouse-btn.drag-btn.active{background:var(--green);color:#000;border-color:var(--green);}
 .btn-row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;}
 .btn-r{padding:12px 0;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:0.9rem;cursor:pointer;flex:1;min-width:60px;text-align:center;}
 .btn-r:active{background:var(--accent);}
-.btn-r.wide{flex:2;}
 .btn-r.accent{background:var(--accent);border-color:var(--accent);}
 .btn-r.green{background:var(--green);border-color:var(--green);color:#000;}
 
@@ -222,12 +240,33 @@ input[type=file]{display:none;}
 
 <!-- ====== 遥控器页 ====== -->
 <div id="page-remote" class="remote-container">
-  <div class="pad" id="pad">👆 手指在这里滑动控制鼠标</div>
-
-  <div class="btn-row">
-    <button class="btn-r" id="btnLeft">🖱️ 左键</button>
-    <button class="btn-r" id="btnRight">🖱️ 右键</button>
-    <button class="btn-r wide" id="btnScroll">↕️ 上下滚动</button>
+  <div class="btn-row" style="margin-bottom:10px;">
+    <button class="btn-r" id="btnFullscreen" style="font-size:0.8rem;">📺 全屏</button>
+    <button class="btn-r" id="btnWakeLock" style="font-size:0.8rem;">💡 常亮:关</button>
+  </div>
+  <div class="mouse-layout">
+    <div class="pad" id="pad">👆 单指=鼠标 | 双指=滚动</div>
+    <div class="mouse-buttons">
+      <button class="mouse-btn" id="btnLeft">左键</button>
+      <button class="mouse-btn" id="btnRight">右键</button>
+    </div>
+  </div>
+  <!-- 灵敏度预设 -->
+  <div class="btn-row" style="margin-top:10px;" id="sensRow">
+    <button class="btn-r sens" data-s="0.8">🎯 精准</button>
+    <button class="btn-r sens" data-s="1.5">🐢 慢</button>
+    <button class="btn-r sens active" data-s="2.0">🐇 标准</button>
+    <button class="btn-r sens" data-s="4">🚀 快</button>
+    <button class="btn-r sens" data-s="8">⚡ 疯狂</button>
+  </div>
+  <!-- 媒体控制 -->
+  <div class="btn-row" style="margin-top:10px;">
+    <button class="btn-r" data-key="MediaPrevTrack">⏮</button>
+    <button class="btn-r accent" data-key="MediaPlayPause">⏯</button>
+    <button class="btn-r" data-key="MediaNextTrack">⏭</button>
+    <button class="btn-r" data-key="VolumeDown">🔉</button>
+    <button class="btn-r" data-key="VolumeMute">🔇</button>
+    <button class="btn-r" data-key="VolumeUp">🔊</button>
   </div>
 
   <div style="display:flex;gap:8px;margin-bottom:12px;">
@@ -304,86 +343,206 @@ function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g
 
 loadFiles();
 
-// ====== 遥控器 - 触摸板 ======
-const PAD = document.getElementById('pad');
-let touchMode = 'mouse'; // mouse | scroll
-let lastX = 0, lastY = 0;
-let moving = false;
-let moveQueue = [];
-let moveTimer = null;
+// ====== 全局：禁止页面滚动 ======
+document.addEventListener('touchmove', function(e) { e.preventDefault(); }, {passive: false});
 
-function sendMove(dx, dy) {
-  moveQueue.push([dx, dy]);
-  if (!moveTimer) {
-    moveTimer = setTimeout(flushMoves, 20);
+// ====== 全屏切换 ======
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(function(){});
+  } else {
+    document.exitFullscreen().catch(function(){});
   }
 }
+document.getElementById('btnFullscreen').addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', function() {
+  var btn = document.getElementById('btnFullscreen');
+  btn.textContent = document.fullscreenElement ? '❌ 退出全屏' : '📺 全屏';
+});
+
+// ====== 屏幕常亮 ======
+var wakeLock = null;
+var wakeLockOn = false;
+var btnWake = document.getElementById('btnWakeLock');
+btnWake.addEventListener('click', async function() {
+  if (wakeLockOn) {
+    if (wakeLock) { wakeLock.release(); wakeLock = null; }
+    wakeLockOn = false;
+    btnWake.textContent = '💡 常亮:关';
+    toast('常亮已关闭');
+  } else {
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLockOn = true;
+      btnWake.textContent = '💡 常亮:开';
+      toast('屏幕常亮已开启');
+      wakeLock.addEventListener('release', function() {
+        wakeLockOn = false;
+        btnWake.textContent = '💡 常亮:关';
+      });
+    } catch(e) {
+      toast('当前浏览器不支持常亮');
+    }
+  }
+});
+
+// ====== 遥控器 - 触摸板 ======
+const PAD = document.getElementById('pad');
+let lastX = 0, lastY = 0;
+let moveAccX = 0, moveAccY = 0;
+let moveTimer = null;
+const MOVE_DEADZONE = 1;
+const MOVE_INTERVAL = 8; // 125Hz
+var sending = false;
 
 function flushMoves() {
-  if (!moveQueue.length) { moveTimer = null; return; }
-  const batch = moveQueue;
-  moveQueue = [];
   moveTimer = null;
-  const total = batch.reduce((acc, m) => [acc[0]+m[0], acc[1]+m[1]], [0,0]);
-  fetch('/api/mouse/move', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dx:total[0], dy:total[1]})}).catch(()=>{});
+  if (sending) return;
+  var dx = Math.round(moveAccX);
+  var dy = Math.round(moveAccY);
+  moveAccX = 0; moveAccY = 0;
+  if (Math.abs(dx) + Math.abs(dy) < MOVE_DEADZONE) return;
+  sending = true;
+  fetch('/api/mouse/move', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dx, dy})})
+    .finally(function(){ sending = false; });
+}
+
+function scheduleFlush() {
+  if (!moveTimer) moveTimer = setTimeout(flushMoves, MOVE_INTERVAL);
 }
 
 function sendClick(btn) {
-  fetch('/api/mouse/click', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({button:btn})}).catch(()=>{});
+  fetch('/api/mouse/click', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({button:btn})}).catch(function(){});
 }
 
 function sendScroll(delta) {
-  fetch('/api/mouse/scroll', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delta:delta})}).catch(()=>{});
+  fetch('/api/mouse/scroll', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delta:delta})}).catch(function(){});
 }
 
-PAD.addEventListener('touchstart', e => {
-  e.preventDefault();
-  const t = e.touches[0];
-  lastX = t.clientX; lastY = t.clientY;
-  PAD.classList.add('active');
+// ====== 灵敏度预设按钮 ======
+var sensitivity = parseFloat(localStorage.getItem('mouse_sensitivity')) || 2.0;
+
+document.querySelectorAll('.sens').forEach(function(btn) {
+  var val = parseFloat(btn.dataset.s);
+  if (val === sensitivity) btn.classList.add('active');
+  btn.addEventListener('click', function() {
+    sensitivity = val;
+    localStorage.setItem('mouse_sensitivity', sensitivity);
+    document.querySelectorAll('.sens').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    toast(btn.textContent.trim() + ' (x' + sensitivity.toFixed(1) + ')');
+  });
 });
 
-PAD.addEventListener('touchmove', e => {
+// ====== 双指滚动 + 鼠标加速度 ======
+var isScrolling = false;
+var lastMidX = 0, lastMidY = 0;
+
+function applyAccel(dx, dy) {
+  var speed = Math.sqrt(dx*dx + dy*dy); // hypot
+  var factor = 1;
+  if (speed > 8)  factor = 1.3;
+  if (speed > 20) factor = 1.8;
+  if (speed > 40) factor = 2.2;
+  factor *= sensitivity;
+  return [dx * factor, dy * factor];
+}
+
+PAD.addEventListener('touchstart', function(e) {
   e.preventDefault();
-  const t = e.touches[0];
-  const dx = (t.clientX - lastX) * 1.5;
-  const dy = (t.clientY - lastY) * 1.5;
-  lastX = t.clientX; lastY = t.clientY;
-  if (touchMode === 'scroll') {
-    sendScroll(Math.round(-dy));
+  if (e.touches.length >= 2) {
+    // 双指 = 滚动模式
+    isScrolling = true;
+    var t0 = e.touches[0], t1 = e.touches[1];
+    lastMidX = (t0.clientX + t1.clientX) / 2;
+    lastMidY = (t0.clientY + t1.clientY) / 2;
+    PAD.classList.add('active');
   } else {
-    sendMove(Math.round(dx), Math.round(dy));
+    // 单指 = 鼠标移动
+    isScrolling = false;
+    var t = e.touches[0];
+    lastX = t.clientX; lastY = t.clientY;
+    PAD.classList.add('active');
   }
-});
+}, {passive: false});
 
-PAD.addEventListener('touchend', e => {
+PAD.addEventListener('touchmove', function(e) {
   e.preventDefault();
-  PAD.classList.remove('active');
-  flushMoves();
-});
+  if (isScrolling && e.touches.length >= 2) {
+    var t0 = e.touches[0], t1 = e.touches[1];
+    var midX = (t0.clientX + t1.clientX) / 2;
+    var midY = (t0.clientY + t1.clientY) / 2;
+    var dy = (lastMidY - midY) * 2.5; // 纵向滚动为主
+    lastMidX = midX; lastMidY = midY;
+    if (Math.abs(dy) > 0) sendScroll(Math.round(dy));
+  } else if (!isScrolling && e.touches.length === 1) {
+    var t = e.touches[0];
+    var dx = (t.clientX - lastX) * sensitivity;
+    var dy = (t.clientY - lastY) * sensitivity;
+    lastX = t.clientX; lastY = t.clientY;
+    var acc = applyAccel(dx, dy);
+    moveAccX += acc[0];
+    moveAccY += acc[1];
+    scheduleFlush();
+  }
+}, {passive: false});
 
-// 也支持鼠标（PC调试用）
-PAD.addEventListener('mousemove', e => {
+PAD.addEventListener('touchend', function(e) {
+  e.preventDefault();
+  if (e.touches.length === 0) {
+    PAD.classList.remove('active');
+    isScrolling = false;
+    flushMoves();
+  } else if (e.touches.length === 1 && isScrolling) {
+    // 从双指变单指：切回鼠标模式
+    isScrolling = false;
+    var t = e.touches[0];
+    lastX = t.clientX; lastY = t.clientY;
+  }
+}, {passive: false});
+
+// PC鼠标调试
+PAD.addEventListener('mousemove', function(e) {
   if (!e.buttons) return;
-  const dx = e.movementX || 0;
-  const dy = e.movementY || 0;
-  if (touchMode === 'scroll') {
-    sendScroll(Math.round(-dy));
-  } else {
-    sendMove(Math.round(dx), Math.round(dy));
-  }
+  var dx = e.movementX || 0;
+  var dy = e.movementY || 0;
+  moveAccX += dx;
+  moveAccY += dy;
+  scheduleFlush();
 });
 
-// 按钮事件
-document.getElementById('btnLeft').addEventListener('click', () => sendClick('left'));
-document.getElementById('btnRight').addEventListener('click', () => sendClick('right'));
+// ====== 侧边栏按钮：按下保持 ======
+function sendDown(btn) {
+  fetch('/api/mouse/down', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({button:btn})}).catch(function(){});
+}
+function sendUp(btn) {
+  fetch('/api/mouse/up', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({button:btn})}).catch(function(){});
+}
 
-const btnScroll = document.getElementById('btnScroll');
-btnScroll.addEventListener('click', () => {
-  touchMode = touchMode === 'scroll' ? 'mouse' : 'scroll';
-  btnScroll.textContent = touchMode === 'scroll' ? '↕️ 滚动模式(点我切回)' : '↕️ 上下滚动';
-  btnScroll.classList.toggle('accent', touchMode === 'scroll');
-});
+function bindBtn(id, btnType) {
+  var el = document.getElementById(id);
+  var active = false;
+  el.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendDown(btnType);
+    el.classList.add('active');
+    active = true;
+  });
+  el.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    if (active) { sendUp(btnType); el.classList.remove('active'); active = false; }
+  });
+  el.addEventListener('touchcancel', function(e) {
+    if (active) { sendUp(btnType); el.classList.remove('active'); active = false; }
+  });
+  // PC 鼠标调试
+  el.addEventListener('mousedown', function(e) { e.preventDefault(); sendDown(btnType); el.classList.add('active'); });
+  el.addEventListener('mouseup', function(e) { e.preventDefault(); sendUp(btnType); el.classList.remove('active'); });
+  el.addEventListener('mouseleave', function(e) { if (active) { sendUp(btnType); el.classList.remove('active'); active = false; } });
+}
+
+bindBtn('btnLeft', 'left');
+bindBtn('btnRight', 'right');
 
 // 键盘输入
 const KEY_INPUT = document.getElementById('keyInput');
@@ -463,19 +622,31 @@ def get_local_ip():
         return '127.0.0.1'
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
     def log_message(self, fmt, *args):
         print(f"[{self.client_address[0]}] {args[0]}")
 
-    def send_json(self, data, code=200):
+    def _send_headers(self, code=200, content_type=None):
         self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
+        if content_type:
+            self.send_header('Content-Type', content_type)
+        self.send_header('Connection', 'keep-alive')
+        self.send_header('Keep-Alive', 'timeout=5, max=100')
         self.end_headers()
+
+    def _send_no_content(self):
+        """204 无正文 — 遥控器高频请求用"""
+        self.send_response(204)
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+
+    def send_json(self, data, code=200):
+        self._send_headers(code, 'application/json')
         self.wfile.write(json.dumps(data).encode())
 
     def send_html(self, html, code=200):
-        self.send_response(code)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.end_headers()
+        self._send_headers(code, 'text/html; charset=utf-8')
         self.wfile.write(html.encode() if isinstance(html, str) else html)
 
     def read_body(self):
@@ -499,13 +670,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             filename = path[len('/download/'):]
             filepath = UPLOAD_DIR / filename
             if filepath.is_file() and filepath.resolve().parent == UPLOAD_DIR.resolve():
+                fsize = filepath.stat().st_size
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/octet-stream')
                 self.send_header('Content-Disposition', f'attachment; filename="{filepath.name}"')
-                self.send_header('Content-Length', str(filepath.stat().st_size))
+                self.send_header('Content-Length', str(fsize))
+                self.send_header('Connection', 'keep-alive')
                 self.end_headers()
                 with open(filepath, 'rb') as f:
-                    self.wfile.write(f.read())
+                    while True:
+                        chunk = f.read(1024*1024)
+                        if not chunk: break
+                        self.wfile.write(chunk)
             else:
                 self.send_json({'error': 'File not found'}, 404)
         else:
@@ -521,6 +697,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.handle_mouse_move()
         elif path == '/api/mouse/click':
             self.handle_mouse_click()
+        elif path == '/api/mouse/down':
+            self.handle_mouse_down()
+        elif path == '/api/mouse/up':
+            self.handle_mouse_up()
         elif path == '/api/mouse/scroll':
             self.handle_mouse_scroll()
         elif path == '/api/key/type':
@@ -530,19 +710,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == '/api/key/win':
             send_key(VK_LWIN, True)
             send_key(VK_LWIN, False)
-            self.send_json({'ok': True, 'action': 'win'})
+            self._send_no_content()
         elif path == '/api/key/alttab':
             send_key(VK_MENU, True)
             send_key(VK_TAB, True)
             send_key(VK_TAB, False)
             send_key(VK_MENU, False)
-            self.send_json({'ok': True, 'action': 'alttab'})
+            self._send_no_content()
         elif path == '/api/key/taskview':
             send_key(VK_LWIN, True)
             send_key(VK_TAB, True)
             send_key(VK_TAB, False)
             send_key(VK_LWIN, False)
-            self.send_json({'ok': True, 'action': 'taskview'})
+            self._send_no_content()
         else:
             self.send_json({'error': 'Not found'}, 404)
 
@@ -560,37 +740,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_json({'error': 'Not found'}, 404)
 
-    # ============== 文件上传 ==============
+    # ============== 文件上传（流式写入，不爆内存）==============
     def handle_upload(self):
         content_type = self.headers.get('Content-Type', '')
         if 'multipart/form-data' not in content_type:
             self.send_json({'error': 'Bad request'}, 400)
             return
-        boundary = content_type.split('boundary=')[1].encode() if 'boundary=' in content_type else None
-        if not boundary:
+        # 提取 boundary
+        bkey = b'boundary='
+        idx = content_type.find('boundary=')
+        if idx == -1:
             self.send_json({'error': 'No boundary'}, 400)
             return
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length)
-        parts = body.split(b'--' + boundary)
-        for part in parts:
-            if b'filename=' in part:
-                header_end = part.find(b'\r\n\r\n')
-                if header_end == -1: continue
-                header = part[:header_end].decode('utf-8', errors='ignore')
-                file_data = part[header_end+4:]
-                if file_data.endswith(b'\r\n'): file_data = file_data[:-2]
-                fname = 'unknown'
-                for line in header.split('\r\n'):
-                    if 'filename=' in line:
-                        fname = line.split('filename=')[1].strip('"')
-                        break
-                filepath = UPLOAD_DIR / fname
-                with open(filepath, 'wb') as f:
-                    f.write(file_data)
-                self.send_json({'ok': True, 'name': fname})
-                return
-        self.send_json({'error': 'No file'}, 400)
+        boundary = content_type[idx+len('boundary='):].encode()
+        total = int(self.headers.get('Content-Length', 0))
+        # 读头部（最多 8KB）
+        head = b''
+        head_size = min(8192, total)
+        while len(head) < head_size:
+            chunk = self.rfile.read(min(1024, head_size - len(head)))
+            if not chunk: break
+            head += chunk
+            total -= len(chunk)
+            if b'\r\n\r\n' in head:
+                break
+        # 解析文件名
+        fname = 'unknown'
+        for line in head.decode('utf-8', errors='ignore').split('\r\n'):
+            if 'filename=' in line:
+                fname = line.split('filename=')[1].strip('"').split('"')[0]
+                break
+        # 文件数据起点
+        data_start = head.find(b'\r\n\r\n')
+        if data_start == -1:
+            self.send_json({'error': 'Parse error'}, 400)
+            return
+        tail_marker = b'\r\n--' + boundary + b'--'
+        tail_len = len(tail_marker) + 2  # + \r\n
+        filepath = UPLOAD_DIR / fname
+        with open(filepath, 'wb') as f:
+            # 头部尾部（已越过 \r\n\r\n 的部分）
+            after_head = head[data_start+4:]
+            f.write(after_head)
+            # 流式读取剩余
+            while total > 0:
+                size = min(1024*1024, total)
+                data = self.rfile.read(size)
+                if not data: break
+                total -= len(data)
+                # 最后一块：裁剪尾部 boundary
+                if total == 0:
+                    idx = data.rfind(tail_marker)
+                    if idx != -1:
+                        data = data[:idx]
+                    elif data.endswith(b'\r\n'):
+                        data = data[:-2]
+                f.write(data)
+        self.send_json({'ok': True, 'name': fname})
 
     # ============== 鼠标操作 ==============
     def handle_mouse_move(self):
@@ -598,28 +804,47 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = json.loads(self.read_body())
             dx = int(data.get('dx', 0))
             dy = int(data.get('dy', 0))
-            mouse_move(dx, dy)
-            self.send_json({'ok': True, 'dx': dx, 'dy': dy})
-        except Exception as e:
-            self.send_json({'error': str(e)}, 400)
+            if dx or dy:
+                mouse_move(dx, dy)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
 
     def handle_mouse_click(self):
         try:
             data = json.loads(self.read_body())
             btn = data.get('button', 'left')
             mouse_click(btn)
-            self.send_json({'ok': True, 'button': btn})
-        except Exception as e:
-            self.send_json({'error': str(e)}, 400)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
 
     def handle_mouse_scroll(self):
         try:
             data = json.loads(self.read_body())
             delta = int(data.get('delta', 0))
             mouse_scroll(delta)
-            self.send_json({'ok': True, 'delta': delta})
-        except Exception as e:
-            self.send_json({'error': str(e)}, 400)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
+
+    def handle_mouse_down(self):
+        try:
+            data = json.loads(self.read_body())
+            btn = data.get('button', 'left')
+            mouse_down(btn)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
+
+    def handle_mouse_up(self):
+        try:
+            data = json.loads(self.read_body())
+            btn = data.get('button', 'left')
+            mouse_up(btn)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
 
     # ============== 键盘操作 ==============
     def handle_key_type(self):
@@ -627,9 +852,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = json.loads(self.read_body())
             text = data.get('text', '')
             type_text(text)
-            self.send_json({'ok': True, 'text': text})
-        except Exception as e:
-            self.send_json({'error': str(e)}, 400)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
 
     def handle_key_special(self):
         try:
@@ -638,11 +863,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             vk = KEY_MAP.get(key)
             if vk:
                 type_key(vk)
-                self.send_json({'ok': True, 'key': key})
-            else:
-                self.send_json({'error': f'Unknown key: {key}'}, 400)
-        except Exception as e:
-            self.send_json({'error': str(e)}, 400)
+            self._send_no_content()
+        except Exception:
+            self._send_no_content()
 
 
 if __name__ == '__main__':
@@ -662,7 +885,7 @@ if __name__ == '__main__':
 ║  按 Ctrl+C 停止                    ║
 ╚══════════════════════════════════════╝
 """)
-    server = http.server.HTTPServer((HOST, PORT), Handler)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
