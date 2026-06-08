@@ -163,7 +163,7 @@ INDEX_HTML = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
-<title>工具箱 v2.1</title>
+<title>工具箱 v2.3</title>
 <style>
 :root{--bg:#0f0f0f;--card:#1a1a1a;--accent:#4dabf7;--text:#e0e0e0;--sub:#888;--danger:#ff6b6b;--border:#2a2a2a;--green:#51cf66;}
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -200,9 +200,10 @@ input[type=file]{display:none;}
 
 /* ====== 遥控器 ====== */
 .remote-container{display:none;}
-.mouse-layout{display:flex;gap:10px;height:260px;}
+.mouse-layout{display:flex;gap:10px;height:55vh;}
 .pad{background:var(--card);border:2px solid var(--border);border-radius:16px;touch-action:none;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:0.9rem;user-select:none;-webkit-user-select:none;flex:1;height:100%;}
 .pad.active{border-color:var(--accent);}
+.pad.clicking{border-color:var(--green);}
 .mouse-buttons{width:90px;display:flex;flex-direction:column;gap:8px;}
 .mouse-btn{flex:1;border:none;border-radius:12px;background:var(--card);color:var(--text);font-size:0.95rem;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;transition:background .1s;border:1px solid var(--border);}
 .mouse-btn:active,.mouse-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
@@ -245,19 +246,18 @@ input[type=file]{display:none;}
     <button class="btn-r" id="btnWakeLock" style="font-size:0.8rem;">💡 常亮:关</button>
   </div>
   <div class="mouse-layout">
-    <div class="pad" id="pad">👆 单指=鼠标 | 双指=滚动</div>
+    <div class="pad" id="pad">👆 单指移 | 点=左键 | 双点=双击 | 长按=拖 | 双指=滚</div>
     <div class="mouse-buttons">
-      <button class="mouse-btn" id="btnLeft">左键</button>
-      <button class="mouse-btn" id="btnRight">右键</button>
+      <button class="mouse-btn" id="btnRight" style="height:100%;">右键</button>
     </div>
   </div>
   <!-- 灵敏度预设 -->
   <div class="btn-row" style="margin-top:10px;" id="sensRow">
-    <button class="btn-r sens" data-s="0.8">🎯 精准</button>
+    <button class="btn-r sens" data-s="1">🎯 精准</button>
     <button class="btn-r sens" data-s="1.5">🐢 慢</button>
-    <button class="btn-r sens active" data-s="2.0">🐇 标准</button>
-    <button class="btn-r sens" data-s="4">🚀 快</button>
-    <button class="btn-r sens" data-s="8">⚡ 疯狂</button>
+    <button class="btn-r sens active" data-s="2">🐇 标准</button>
+    <button class="btn-r sens" data-s="3">🚀 快</button>
+    <button class="btn-r sens" data-s="5">⚡ 疯狂</button>
   </div>
   <!-- 媒体控制 -->
   <div class="btn-row" style="margin-top:10px;">
@@ -434,52 +434,66 @@ document.querySelectorAll('.sens').forEach(function(btn) {
   });
 });
 
-// ====== 双指滚动 + 鼠标加速度 ======
+// ====== 手势系统 ======
 var isScrolling = false;
 var lastMidX = 0, lastMidY = 0;
+var moved = false;
+var touchStartTime = 0;
+var longPressTimer = null;
+var tapTimer = null;
+var tapCount = 0;
+var dragging = false;
 
 function applyAccel(dx, dy) {
-  var speed = Math.sqrt(dx*dx + dy*dy); // hypot
+  var speed = Math.sqrt(dx*dx + dy*dy);
   var factor = 1;
-  if (speed > 8)  factor = 1.3;
-  if (speed > 20) factor = 1.8;
-  if (speed > 40) factor = 2.2;
+  if (speed > 10) factor = 1.5;
+  if (speed > 25) factor = 2;
+  if (speed > 50) factor = 3;
+  if (speed > 80) factor = 4;
   factor *= sensitivity;
   return [dx * factor, dy * factor];
 }
 
 PAD.addEventListener('touchstart', function(e) {
   e.preventDefault();
+  var now = Date.now();
   if (e.touches.length >= 2) {
-    // 双指 = 滚动模式
-    isScrolling = true;
+    // 双指 = 滚动
+    isScrolling = true; moved = true; dragging = false;
+    clearTimeout(longPressTimer); clearTimeout(tapTimer);
     var t0 = e.touches[0], t1 = e.touches[1];
     lastMidX = (t0.clientX + t1.clientX) / 2;
     lastMidY = (t0.clientY + t1.clientY) / 2;
     PAD.classList.add('active');
   } else {
-    // 单指 = 鼠标移动
-    isScrolling = false;
+    // 单指
+    isScrolling = false; moved = false; touchStartTime = now;
     var t = e.touches[0];
     lastX = t.clientX; lastY = t.clientY;
     PAD.classList.add('active');
+    // 长按 300ms = 按住左键（拖拽）
+    longPressTimer = setTimeout(function() {
+      if (!moved) { sendDown('left'); dragging = true; PAD.classList.add('clicking'); }
+    }, 300);
   }
 }, {passive: false});
 
 PAD.addEventListener('touchmove', function(e) {
   e.preventDefault();
-  if (isScrolling && e.touches.length >= 2) {
+  if (e.touches.length >= 2) {
     var t0 = e.touches[0], t1 = e.touches[1];
-    var midX = (t0.clientX + t1.clientX) / 2;
     var midY = (t0.clientY + t1.clientY) / 2;
-    var dy = (lastMidY - midY) * 2.5; // 纵向滚动为主
-    lastMidX = midX; lastMidY = midY;
+    var dy = (lastMidY - midY) * 5;
+    lastMidY = midY;
     if (Math.abs(dy) > 0) sendScroll(Math.round(dy));
-  } else if (!isScrolling && e.touches.length === 1) {
+  } else if (e.touches.length === 1) {
     var t = e.touches[0];
-    var dx = (t.clientX - lastX) * sensitivity;
-    var dy = (t.clientY - lastY) * sensitivity;
+    var dx = t.clientX - lastX;
+    var dy = t.clientY - lastY;
     lastX = t.clientX; lastY = t.clientY;
+    if (Math.abs(dx) > 0 || Math.abs(dy) > 0) moved = true;
+    if (dragging) return; // 拖拽时不动鼠标，靠系统按住移动
     var acc = applyAccel(dx, dy);
     moveAccX += acc[0];
     moveAccY += acc[1];
@@ -489,12 +503,32 @@ PAD.addEventListener('touchmove', function(e) {
 
 PAD.addEventListener('touchend', function(e) {
   e.preventDefault();
+  clearTimeout(longPressTimer);
+  if (dragging) { sendUp('left'); dragging = false; PAD.classList.remove('clicking'); }
   if (e.touches.length === 0) {
-    PAD.classList.remove('active');
+    PAD.classList.remove('active', 'clicking');
     isScrolling = false;
     flushMoves();
+    // 判断 tap/双击
+    if (!moved && !dragging) {
+      var elapsed = Date.now() - touchStartTime;
+      if (elapsed < 200) {
+        tapCount++;
+        if (tapCount === 1) {
+          tapTimer = setTimeout(function() {
+            sendClick('left'); // 单击 = 左键
+            tapCount = 0;
+          }, 250);
+        } else if (tapCount >= 2) {
+          clearTimeout(tapTimer);
+          sendClick('left'); sendClick('left'); // 双击
+          tapCount = 0;
+        }
+      }
+    } else {
+      tapCount = 0;
+    }
   } else if (e.touches.length === 1 && isScrolling) {
-    // 从双指变单指：切回鼠标模式
     isScrolling = false;
     var t = e.touches[0];
     lastX = t.clientX; lastY = t.clientY;
@@ -541,7 +575,6 @@ function bindBtn(id, btnType) {
   el.addEventListener('mouseleave', function(e) { if (active) { sendUp(btnType); el.classList.remove('active'); active = false; } });
 }
 
-bindBtn('btnLeft', 'left');
 bindBtn('btnRight', 'right');
 
 // 键盘输入
